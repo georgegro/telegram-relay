@@ -5,6 +5,7 @@ const SECRET_MAX = 4096;
 const BODY_MAX = 32 * 1024;
 const TOKEN_PATTERN = /^\d+:[A-Za-z0-9_-]+$/;
 const CHAT_PATTERN = /^(?:@[A-Za-z0-9_]{5,32}|-?\d{1,20})$/;
+const EXTRA_CHAT_PATTERN = /^-?\d{1,20}$/;
 const TELEGRAM_ORIGIN = "https://api.telegram.org";
 
 function envValue(name) {
@@ -54,6 +55,22 @@ function readText(payload) {
   return { text };
 }
 
+function resolveRecipient(payload, defaultChatId) {
+  const { to } = payload;
+  if (to === undefined || to === "default") {
+    return { chatId: defaultChatId };
+  }
+  if (to !== "extra") {
+    return { error: "invalid_recipient" };
+  }
+
+  const extraChatId = envValue("TELEGRAM_EXTRA_CHAT_ID");
+  if (!EXTRA_CHAT_PATTERN.test(extraChatId)) {
+    return { error: "recipient_not_configured" };
+  }
+  return { chatId: extraChatId };
+}
+
 export default {
   async fetch(request) {
     if (request.method !== "POST") {
@@ -96,6 +113,11 @@ export default {
       return json(400, { ok: false, error: message.error });
     }
 
+    const recipient = resolveRecipient(payload, chatId);
+    if (recipient.error) {
+      return json(400, { ok: false, error: recipient.error });
+    }
+
     const url = new URL(`/bot${token}/sendMessage`, TELEGRAM_ORIGIN);
     if (
       url.origin !== TELEGRAM_ORIGIN ||
@@ -110,7 +132,7 @@ export default {
       const response = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text: message.text }),
+        body: JSON.stringify({ chat_id: recipient.chatId, text: message.text }),
         redirect: "error",
         cache: "no-store",
         signal: AbortSignal.timeout(8000),

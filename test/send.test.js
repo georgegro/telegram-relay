@@ -5,11 +5,13 @@ import handler from "../api/send.js";
 
 const TOKEN = "1:testtokenvalue";
 const CHAT = "-1000000000000";
+const EXTRA = "424242";
 const SECRET = "test-relay-secret-value";
 
 const prevEnv = {
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
+  TELEGRAM_EXTRA_CHAT_ID: process.env.TELEGRAM_EXTRA_CHAT_ID,
   RELAY_SECRET: process.env.RELAY_SECRET,
 };
 const realFetch = globalThis.fetch;
@@ -33,6 +35,7 @@ function telegramOk() {
 beforeEach(() => {
   process.env.TELEGRAM_BOT_TOKEN = TOKEN;
   process.env.TELEGRAM_CHAT_ID = CHAT;
+  delete process.env.TELEGRAM_EXTRA_CHAT_ID;
   process.env.RELAY_SECRET = SECRET;
   calls = [];
   globalThis.fetch = async (url, init) => {
@@ -194,6 +197,93 @@ test("hides Telegram error details", async () => {
   assert.equal(raw.includes(CHAT), false);
 });
 
+test("omitted or default recipient stays on TELEGRAM_CHAT_ID", async () => {
+  process.env.TELEGRAM_EXTRA_CHAT_ID = EXTRA;
+
+  const omitted = await send(JSON.stringify({ text: "hi" }));
+  assert.equal(omitted.status, 200);
+  assert.deepEqual(JSON.parse(calls[0].init.body), { chat_id: CHAT, text: "hi" });
+
+  const explicit = await send(JSON.stringify({ text: "hi", to: "default" }));
+  assert.equal(explicit.status, 200);
+  assert.deepEqual(JSON.parse(calls[1].init.body), { chat_id: CHAT, text: "hi" });
+
+  delete process.env.TELEGRAM_EXTRA_CHAT_ID;
+  calls.length = 0;
+  const unset = await send(JSON.stringify({ text: "hi" }));
+  assert.equal(unset.status, 200);
+  assert.equal(JSON.parse(calls[0].init.body).chat_id, CHAT);
+
+  const injected = await send(JSON.stringify({ text: "hi", chat_id: "999999" }));
+  assert.equal(injected.status, 200);
+  assert.equal(JSON.parse(calls[1].init.body).chat_id, CHAT);
+});
+
+test("sends to the extra recipient when to is extra", async () => {
+  process.env.TELEGRAM_EXTRA_CHAT_ID = ` ${EXTRA} `;
+
+  const response = await send(JSON.stringify({ text: "hi", to: "extra" }));
+  const raw = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.equal(raw, '{"ok":true}');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, `https://api.telegram.org/bot${TOKEN}/sendMessage`);
+  assert.equal(calls[0].init.redirect, "error");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    chat_id: EXTRA,
+    text: "hi",
+  });
+  assert.equal(raw.includes(EXTRA), false);
+  assert.equal(raw.includes(TOKEN), false);
+
+  process.env.TELEGRAM_EXTRA_CHAT_ID = "-100424242";
+  const negative = await send(JSON.stringify({ text: "hi", to: "extra" }));
+  assert.equal(negative.status, 200);
+  assert.equal(JSON.parse(calls[1].init.body).chat_id, "-100424242");
+});
+
+test("rejects an unknown recipient", async () => {
+  process.env.TELEGRAM_EXTRA_CHAT_ID = EXTRA;
+
+  for (const to of ["other", "group", "", "Extra", null, 1]) {
+    const response = await send(JSON.stringify({ text: "hi", to }));
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { ok: false, error: "invalid_recipient" });
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("rejects extra when TELEGRAM_EXTRA_CHAT_ID is unset or invalid", async () => {
+  const unset = await send(JSON.stringify({ text: "hi", to: "extra" }));
+  assert.equal(unset.status, 400);
+  assert.deepEqual(await unset.json(), { ok: false, error: "recipient_not_configured" });
+
+  for (const value of ["", "   ", "@channelname", "not-a-chat", "12ab", "+424242", "1".repeat(21)]) {
+    process.env.TELEGRAM_EXTRA_CHAT_ID = value;
+    const response = await send(JSON.stringify({ text: "hi", to: "extra" }));
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { ok: false, error: "recipient_not_configured" });
+  }
+
+  process.env.TELEGRAM_EXTRA_CHAT_ID = "not-a-chat";
+  const fallback = await send(JSON.stringify({ text: "still default" }));
+  assert.equal(fallback.status, 200);
+  assert.equal(JSON.parse(calls[0].init.body).chat_id, CHAT);
+  assert.equal(calls.length, 1);
+});
+
+test("rejects a raw chat id in to", async () => {
+  process.env.TELEGRAM_EXTRA_CHAT_ID = EXTRA;
+
+  for (const to of [EXTRA, CHAT, "123456789", "-1001234567890", "@someone"]) {
+    const response = await send(JSON.stringify({ text: "hi", to }));
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { ok: false, error: "invalid_recipient" });
+  }
+  assert.equal(calls.length, 0);
+});
+
 test("reports an unreachable Bot API without echoing the failure", async () => {
   globalThis.fetch = async () => {
     throw new Error(`boom ${TOKEN} ${CHAT}`);
@@ -214,8 +304,12 @@ test("docs and examples contain no tokens or chat ids", async () => {
 
   assert.match(docs, /TELEGRAM_BOT_TOKEN/);
   assert.match(docs, /TELEGRAM_CHAT_ID/);
+  assert.match(docs, /TELEGRAM_EXTRA_CHAT_ID/);
   assert.match(docs, /RELAY_SECRET/);
   assert.match(docs, /X-Relay-Secret/);
+  assert.match(readme, /press Start/);
+  assert.match(readme, /numeric/);
+  assert.match(readme, /@username/);
   assert.doesNotMatch(docs, /\d{6,}:[A-Za-z0-9_-]{10,}/);
   assert.doesNotMatch(docs, /api\.telegram\.org\/bot(?!<)/);
   assert.doesNotMatch(source, /\d{6,}:[A-Za-z0-9_-]{10,}/);
