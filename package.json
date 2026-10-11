@@ -1,0 +1,12 @@
+{
+  "name": "telegram-outbound-relay",
+  "private": true,
+  "description": "Outbound-only Telegram sendMessage relay as one Vercel function.",
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1"
+  }
+}
